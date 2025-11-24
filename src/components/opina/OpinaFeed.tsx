@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
@@ -30,6 +30,7 @@ interface FeedPost {
   userVote?: 'like' | 'dislike' | null;
   source: string;
   audioText?: string;
+  audioUrl?: string;
   views?: number;
   participants?: number;
   fromBackend?: boolean;
@@ -570,6 +571,8 @@ const typeInfo: Record<string, { label: string; icon: any }> = {
 
 export function OpinaFeed({ userInterests, audioMode, isAnonymous, authToken }: OpinaFeedProps) {
   const [posts, setPosts] = useState(feedPosts);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const ptVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
   const [categories, setCategories] = useState<CategoryResponse[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [backendError, setBackendError] = useState<string | null>(null);
@@ -587,6 +590,31 @@ export function OpinaFeed({ userInterests, audioMode, isAnonymous, authToken }: 
   const [prioritiesModalOpen, setPrioritiesModalOpen] = useState(false); // Modal de prioridades
   const [prioritiesFilter, setPrioritiesFilter] = useState<string>('pavimentacao'); // Filtro do modal
   const [showPollHistory, setShowPollHistory] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const pickVoice = () => {
+      const voices = window.speechSynthesis.getVoices();
+      const preferred = voices.find(
+        (v) =>
+          v.lang?.toLowerCase().startsWith('pt-br') &&
+          /fem|maria|luciana|brasil|mulher/i.test(v.name || ''),
+      );
+      const fallback = voices.find((v) => v.lang?.toLowerCase().startsWith('pt-br'));
+      ptVoiceRef.current = preferred || fallback || null;
+    };
+
+    pickVoice();
+    window.speechSynthesis.onvoiceschanged = pickVoice;
+  }, []);
 
   useEffect(() => {
     const bootstrap = async () => {
@@ -651,6 +679,7 @@ export function OpinaFeed({ userInterests, audioMode, isAnonymous, authToken }: 
           dislikes: 0,
           source: 'Conteúdo oficial',
           audioText: post.content,
+          audioUrl: post.audioUrl,
         };
       });
 
@@ -754,6 +783,7 @@ export function OpinaFeed({ userInterests, audioMode, isAnonymous, authToken }: 
           dislikes: 0,
           source: 'Categorias seguidas',
           audioText: post.content,
+          audioUrl: post.audioUrl,
         };
       });
       setFollowedCategoryIds(new Set(response.map((post) => post.categoryId)));
@@ -858,7 +888,39 @@ export function OpinaFeed({ userInterests, audioMode, isAnonymous, authToken }: 
   };
 
   const handleAudioPlay = (post: FeedPost) => {
-    alert(`🔊 Ouvindo: ${post.title}\n\nEm produção, usar Web Speech API:\nwindow.speechSynthesis.speak(new SpeechSynthesisUtterance("${post.audioText}"))`);
+    try {
+      // Prioriza áudio vindo da API
+      if (post.audioUrl) {
+        if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current = null;
+        }
+        const audio = new Audio(post.audioUrl);
+        audioRef.current = audio;
+        audio.play().catch(() => {
+          alert('Não foi possível reproduzir o áudio. Verifique a URL retornada pela API.');
+        });
+        return;
+      }
+
+      // Fallback para síntese de voz se tiver texto
+      if (post.audioText || post.summary) {
+        const utterance = new SpeechSynthesisUtterance(
+          post.audioText || post.summary || post.title,
+        );
+        utterance.lang = 'pt-BR';
+        if (ptVoiceRef.current) {
+          utterance.voice = ptVoiceRef.current;
+        }
+        window.speechSynthesis.speak(utterance);
+        return;
+      }
+
+      alert('Nenhum áudio disponível para este conteúdo.');
+    } catch (error) {
+      console.error('Erro ao reproduzir áudio', error);
+      alert('Erro ao reproduzir áudio.');
+    }
   };
 
   const handleShare = (post: FeedPost) => {
