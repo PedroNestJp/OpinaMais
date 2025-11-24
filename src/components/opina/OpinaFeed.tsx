@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
@@ -8,12 +8,14 @@ import { InstagramShareTemplate } from './InstagramShareTemplate';
 import { Carousel, CarouselContent, CarouselItem, CarouselNext, CarouselPrevious } from '../ui/carousel';
 import { OpinaPoll } from './OpinaPoll';
 import { PrioritiesModal } from './PrioritiesModal';
+import { api, CategoryResponse } from '../../lib/api.ts';
 import opinaPlusLogo from 'figma:asset/39a9e75927b809ece9dd0193bc4b5f71704027b2.png';
 
 interface OpinaFeedProps {
   userInterests: string[];
   audioMode: boolean;
   isAnonymous?: boolean;
+  authToken?: string | null;
 }
 
 interface FeedPost {
@@ -30,9 +32,14 @@ interface FeedPost {
   audioText?: string;
   views?: number;
   participants?: number;
+  fromBackend?: boolean;
+  backendId?: number;
+  backendType?: 'post' | 'poll';
+  categoryId?: number;
+  categoryTitle?: string;
   // Dados da enquete
   pollData?: {
-    pollType: 'multiple-choice' | 'scale' | 'multiple-select';
+    pollType: 'multiple-choice' | 'scale' | 'multiple-select' | 'approval';
     pollCategory?: 'geral' | 'pavimentacao' | 'iluminacao' | 'seguranca' | 'lazer' | 'andamento';
     options?: Array<{ id: string; text: string; votes: number }>;
     maxSelections?: number;
@@ -529,6 +536,29 @@ const categoryInfo: Record<string, { label: string; color: string }> = {
   education: { label: 'Educação', color: 'bg-purple-100 text-purple-700 border-purple-200' },
 };
 
+const getCategoryInfo = (key: string) =>
+  categoryInfo[key] || {
+    label: key || 'Geral',
+    color: 'bg-gray-100 text-gray-700 border-gray-200',
+  };
+
+const mapCategoryFromTitle = (title: string) => {
+  const normalized = title.toLowerCase();
+  if (normalized.includes('saú') || normalized.includes('saud')) return 'health';
+  if (normalized.includes('educ')) return 'education';
+  if (normalized.includes('ambi') || normalized.includes('meio')) return 'environment';
+  if (normalized.includes('mobil') || normalized.includes('transp')) return 'mobility';
+  if (normalized.includes('obra') || normalized.includes('infra')) return 'infrastructure';
+  return 'education';
+};
+
+const formatAsBrazilianDate = (date: Date) => {
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = date.getFullYear();
+  return `${day}/${month}/${year}`;
+};
+
 const typeInfo: Record<string, { label: string; icon: any }> = {
   pl: { label: 'Projeto de Lei', icon: FileText },
   pauta: { label: 'Em Pauta', icon: TrendingUp },
@@ -538,8 +568,16 @@ const typeInfo: Record<string, { label: string; icon: any }> = {
   poll: { label: 'Enquete', icon: MessageSquare },
 };
 
-export function OpinaFeed({ userInterests, audioMode, isAnonymous }: OpinaFeedProps) {
+export function OpinaFeed({ userInterests, audioMode, isAnonymous, authToken }: OpinaFeedProps) {
   const [posts, setPosts] = useState(feedPosts);
+  const [categories, setCategories] = useState<CategoryResponse[]>([]);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
+  const [backendError, setBackendError] = useState<string | null>(null);
+  const [loadingPosts, setLoadingPosts] = useState(false);
+  const [loadingPolls, setLoadingPolls] = useState(false);
+  const [followedCategoryIds, setFollowedCategoryIds] = useState<Set<number>>(new Set());
+  const [followedPosts, setFollowedPosts] = useState<FeedPost[]>([]);
+  const [loadingFollowed, setLoadingFollowed] = useState(false);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [instagramDialogOpen, setInstagramDialogOpen] = useState(false);
   const [selectedPost, setSelectedPost] = useState<FeedPost | null>(null);
@@ -548,6 +586,215 @@ export function OpinaFeed({ userInterests, audioMode, isAnonymous }: OpinaFeedPr
   const [votedPolls, setVotedPolls] = useState<Set<string>>(new Set()); // Rastrear enquetes votadas
   const [prioritiesModalOpen, setPrioritiesModalOpen] = useState(false); // Modal de prioridades
   const [prioritiesFilter, setPrioritiesFilter] = useState<string>('pavimentacao'); // Filtro do modal
+  const [showPollHistory, setShowPollHistory] = useState(false);
+
+  useEffect(() => {
+    const bootstrap = async () => {
+      await Promise.all([loadCategories(), loadPolls()]);
+    };
+    bootstrap();
+  }, []);
+
+  useEffect(() => {
+    if (selectedCategoryId) {
+      loadPosts(selectedCategoryId);
+    }
+  }, [selectedCategoryId]);
+
+  useEffect(() => {
+    if (authToken && categories.length > 0) {
+      loadFollowedPosts();
+    }
+  }, [authToken, categories.length]);
+
+  const loadCategories = async () => {
+    try {
+      const response = await api.listCategories();
+      setCategories(response);
+      if (!selectedCategoryId && response.length > 0) {
+        setSelectedCategoryId(response[0].id);
+      }
+    } catch (error) {
+      setBackendError(
+        error instanceof Error ? error.message : 'Erro ao carregar categorias.',
+      );
+    }
+  };
+
+  const loadPosts = async (categoryId: number) => {
+    setLoadingPosts(true);
+    setBackendError(null);
+    try {
+      const response = await api.listPostsByCategory(categoryId);
+      const categoryTitle =
+        categories.find((category) => category.id === categoryId)?.title ||
+        'Geral';
+
+      const mapped: FeedPost[] = response.map((post) => {
+        const categoryKey = mapCategoryFromTitle(categoryTitle);
+        return {
+          id: Number(`9${post.id}`),
+          backendId: post.id,
+          backendType: 'post',
+          fromBackend: true,
+          categoryId: post.categoryId,
+          categoryTitle,
+          type: 'pauta',
+          category: categoryKey,
+          title: post.title,
+          summary:
+            post.content.length > 220
+              ? `${post.content.slice(0, 220)}...`
+              : post.content,
+          date: formatAsBrazilianDate(new Date()),
+          likes: 0,
+          dislikes: 0,
+          source: 'Conteúdo oficial',
+          audioText: post.content,
+        };
+      });
+
+      setPosts((prev) => {
+        const withoutBackendPosts = prev.filter(
+          (post) => !(post.fromBackend && post.backendType === 'post'),
+        );
+        return [...mapped, ...withoutBackendPosts];
+      });
+    } catch (error) {
+      setBackendError(
+        error instanceof Error ? error.message : 'Erro ao carregar posts.',
+      );
+    } finally {
+      setLoadingPosts(false);
+    }
+  };
+
+  const loadPolls = async () => {
+    setLoadingPolls(true);
+    setBackendError(null);
+    try {
+      const response = await api.listPolls();
+      const mapped: FeedPost[] = response.map((poll) => {
+        const totalVoters = poll.votesFor + poll.votesAgainst;
+        const startDate = formatAsBrazilianDate(new Date());
+        const endDate = formatAsBrazilianDate(
+          new Date(Date.now() + 1000 * 60 * 60 * 24 * 15),
+        );
+
+        return {
+          id: Number(`8${poll.id}`),
+          backendId: poll.id,
+          backendType: 'poll',
+          fromBackend: true,
+          category: 'infrastructure',
+          title: poll.title,
+          summary: poll.description || 'Enquete oficial',
+          date: startDate,
+          likes: 0,
+          dislikes: 0,
+          source: 'Enquete oficial',
+          audioText: poll.description || poll.title,
+          pollData: {
+            pollType: 'multiple-choice',
+            pollCategory: 'geral',
+            options: [
+              { id: 'favor', text: 'A favor', votes: poll.votesFor },
+              { id: 'contra', text: 'Contra', votes: poll.votesAgainst },
+            ],
+            allowComment: false,
+            startDate,
+            endDate,
+            totalVoters,
+            resultsUsage: 'Dados retornados pela API oficial',
+          },
+        };
+      });
+
+      setPosts((prev) => {
+        const withoutBackendPolls = prev.filter(
+          (post) => !(post.fromBackend && post.backendType === 'poll'),
+        );
+        return [...mapped, ...withoutBackendPolls];
+      });
+    } catch (error) {
+      setBackendError(
+        error instanceof Error ? error.message : 'Erro ao carregar enquetes.',
+      );
+    } finally {
+      setLoadingPolls(false);
+    }
+  };
+
+  const loadFollowedPosts = async () => {
+    if (!authToken) return;
+    setLoadingFollowed(true);
+    setBackendError(null);
+    try {
+      const response = await api.listFollowedPosts();
+      const mapped: FeedPost[] = response.map((post) => {
+        const categoryTitle =
+          categories.find((cat) => cat.id === post.categoryId)?.title || 'Geral';
+        const categoryKey = mapCategoryFromTitle(categoryTitle);
+        return {
+          id: Number(`7${post.id}`),
+          backendId: post.id,
+          backendType: 'post',
+          fromBackend: true,
+          categoryId: post.categoryId,
+          categoryTitle,
+          type: 'pauta',
+          category: categoryKey,
+          title: post.title,
+          summary:
+            post.content.length > 220
+              ? `${post.content.slice(0, 220)}...`
+              : post.content,
+          date: formatAsBrazilianDate(new Date()),
+          likes: 0,
+          dislikes: 0,
+          source: 'Categorias seguidas',
+          audioText: post.content,
+        };
+      });
+      setFollowedCategoryIds(new Set(response.map((post) => post.categoryId)));
+      setFollowedPosts(mapped);
+    } catch (error) {
+      setBackendError(
+        error instanceof Error ? error.message : 'Erro ao carregar posts das categorias seguidas.',
+      );
+    } finally {
+      setLoadingFollowed(false);
+    }
+  };
+
+  const handleToggleFollow = async (categoryId: number) => {
+    if (!authToken) {
+      alert('Faça login para seguir categorias e receber posts personalizados.');
+      return;
+    }
+
+    setLoadingFollowed(true);
+    setBackendError(null);
+    const next = new Set(followedCategoryIds);
+    if (next.has(categoryId)) {
+      next.delete(categoryId);
+    } else {
+      next.add(categoryId);
+    }
+
+    try {
+      const response = await api.followCategories(Array.from(next));
+      const ids = new Set(response.map((cat) => cat.id));
+      setFollowedCategoryIds(ids);
+      await loadFollowedPosts();
+    } catch (error) {
+      setBackendError(
+        error instanceof Error ? error.message : 'Erro ao seguir categorias.',
+      );
+    } finally {
+      setLoadingFollowed(false);
+    }
+  };
 
   const handleVote = (postId: number, voteType: 'like' | 'dislike') => {
     setPosts((prev) =>
@@ -583,12 +830,31 @@ export function OpinaFeed({ userInterests, audioMode, isAnonymous }: OpinaFeedPr
     );
   };
 
-  const handlePollVote = (pollId: string, response: any) => {
-    console.log('Voto na enquete:', pollId, response);
-    setVotedPolls(prev => new Set(prev).add(pollId));
-    
-    // Aqui você poderia fazer uma chamada à API para salvar o voto
-    // Por enquanto, apenas marcamos como votado
+  const handlePollVote = async (pollId: string, response: any) => {
+    const targetPoll = posts.find((post) => post.id.toString() === pollId);
+
+    if (targetPoll?.fromBackend && targetPoll.backendType === 'poll') {
+      if (!authToken) {
+        alert('Para votar nas enquetes oficiais, faça login ou crie sua conta.');
+        return;
+      }
+
+      try {
+        const isInFavor =
+          response?.selectedOptions?.[0] === 'favor' ||
+          response?.scaleValue === undefined
+            ? response?.selectedOptions?.[0] !== 'contra'
+            : response?.scaleValue > 2;
+        await api.votePoll(targetPoll.backendId as number, Boolean(isInFavor));
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Não foi possível registrar seu voto.';
+        alert(message);
+        return;
+      }
+    }
+
+    setVotedPolls((prev) => new Set(prev).add(pollId));
   };
 
   const handleAudioPlay = (post: FeedPost) => {
@@ -700,9 +966,6 @@ export function OpinaFeed({ userInterests, audioMode, isAnonymous }: OpinaFeedPr
     return now > endDate;
   });
 
-  // Estado para mostrar histórico de enquetes
-  const [showPollHistory, setShowPollHistory] = useState(false);
-
   // Chips de tópicos
   const topicChips = [
     { id: 'todos', label: 'Todos' },
@@ -713,9 +976,20 @@ export function OpinaFeed({ userInterests, audioMode, isAnonymous }: OpinaFeedPr
     { id: 'urgente', label: 'Urgente' },
   ];
 
+  const backendCategoryPosts = posts.filter(
+    (post) =>
+      post.fromBackend &&
+      post.backendType === 'post' &&
+      (selectedCategoryId ? post.categoryId === selectedCategoryId : true),
+  );
+
+  const backendPolls = posts.filter(
+    (post) => post.fromBackend && post.backendType === 'poll',
+  );
+
   // Função para renderizar card compacto (carrossel)
   const renderCompactCard = (post: FeedPost) => {
-    const category = categoryInfo[post.category];
+    const category = getCategoryInfo(post.category);
     
     return (
       <Card key={post.id} className="h-full border-l-4 border-l-primary relative">
@@ -745,6 +1019,154 @@ export function OpinaFeed({ userInterests, audioMode, isAnonymous }: OpinaFeedPr
           {filteredPosts.length} conteúdos sobre os temas que você acompanha
         </p>
       </div>
+
+      {/* Dados vindos do backend */}
+      <Card className="p-4 space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-foreground">Conteúdos oficiais (API)</p>
+            <p className="text-xs text-muted-foreground">
+              Categorias, posts e enquetes carregados do backend Laravel
+            </p>
+            {backendError && (
+              <p className="text-xs text-red-600 mt-1">{backendError}</p>
+            )}
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              if (selectedCategoryId) loadPosts(selectedCategoryId);
+              loadPolls();
+            }}
+            disabled={loadingPosts || loadingPolls}
+          >
+            {loadingPosts || loadingPolls ? 'Atualizando...' : 'Recarregar'}
+          </Button>
+        </div>
+
+        {categories.length > 0 ? (
+          <div className="flex gap-2 flex-wrap">
+            {categories.map((category) => (
+              <button
+                key={category.id}
+                onClick={() => setSelectedCategoryId(category.id)}
+                className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${
+                  selectedCategoryId === category.id
+                    ? 'bg-primary text-white border-primary'
+                    : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                }`}
+              >
+                {category.title}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            {loadingPosts ? 'Carregando categorias...' : 'Nenhuma categoria cadastrada ainda.'}
+          </p>
+        )}
+
+        <div className="space-y-2">
+          {backendCategoryPosts.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              {loadingPosts ? 'Buscando posts dessa categoria...' : 'Ainda não há posts publicados nesta categoria.'}
+            </p>
+          ) : (
+            backendCategoryPosts.slice(0, 3).map((post) => (
+              <Card key={post.id} className="p-3 border-l-4 border-primary">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="space-y-1">
+                    <p className="text-[11px] text-muted-foreground uppercase tracking-wide">
+                      {post.categoryTitle || getCategoryInfo(post.category).label}
+                    </p>
+                    <h4 className="text-sm text-foreground">{post.title}</h4>
+                    <p className="text-xs text-muted-foreground line-clamp-2">
+                      {post.summary}
+                    </p>
+                  </div>
+                  <Badge variant="outline" className="text-[10px]">API</Badge>
+                </div>
+              </Card>
+            ))
+          )}
+        </div>
+
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold text-foreground">Seguir categorias (API)</p>
+            {authToken ? (
+              <p className="text-xs text-muted-foreground">
+                Clique para seguir e receber posts recomendados
+              </p>
+            ) : (
+              <p className="text-xs text-red-600">
+                Faça login para seguir categorias
+              </p>
+            )}
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            {categories.map((category) => {
+              const isFollowed = followedCategoryIds.has(category.id);
+              return (
+                <button
+                  key={category.id}
+                  onClick={() => handleToggleFollow(category.id)}
+                  className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${
+                    isFollowed
+                      ? 'bg-primary text-white border-primary'
+                      : 'bg-white text-foreground hover:bg-muted'
+                  }`}
+                  disabled={loadingFollowed}
+                >
+                  {isFollowed ? '✓ ' : '+'}{category.title}
+                </button>
+              );
+            })}
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <h4 className="text-sm text-foreground">Posts das categorias que você segue</h4>
+              {loadingFollowed && <span className="text-xs text-muted-foreground">Atualizando...</span>}
+            </div>
+            {followedPosts.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                {authToken
+                  ? loadingFollowed
+                    ? 'Carregando posts personalizados...'
+                    : 'Siga categorias para ver posts aqui.'
+                  : 'Entre para seguir categorias.'}
+              </p>
+            ) : (
+              followedPosts.slice(0, 4).map((post) => {
+                const category = getCategoryInfo(post.category);
+                return (
+                  <Card key={post.id} className="p-3 border-l-4 border-primary/60">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="space-y-1">
+                        <Badge variant="outline" className={`border ${category.color} text-[10px]`}>
+                          {post.categoryTitle || category.label}
+                        </Badge>
+                        <h4 className="text-sm text-foreground">{post.title}</h4>
+                        <p className="text-xs text-muted-foreground line-clamp-2">
+                          {post.summary}
+                        </p>
+                      </div>
+                      <Badge variant="outline" className="text-[10px]">Seguidas</Badge>
+                    </div>
+                  </Card>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        {backendPolls.length > 0 && (
+          <p className="text-xs text-muted-foreground">
+            Enquetes oficiais carregadas: {backendPolls.length}
+          </p>
+        )}
+      </Card>
 
       {/* Chips de Tópicos */}
       <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
@@ -915,7 +1337,7 @@ export function OpinaFeed({ userInterests, audioMode, isAnonymous }: OpinaFeedPr
 
       {/* Feed Posts - Limitado: 2 PLs + Enquete */}
       {typeFilteredPosts.filter(post => post.type === 'pl').slice(0, 2).map((post) => {
-        const category = categoryInfo[post.category];
+        const category = getCategoryInfo(post.category);
         const typeData = typeInfo[post.type];
         const TypeIcon = typeData.icon;
 
@@ -1094,7 +1516,7 @@ export function OpinaFeed({ userInterests, audioMode, isAnonymous }: OpinaFeedPr
                   }}
                 >
                   <InstagramShareTemplate
-                    category={categoryInfo[selectedPost.category].label}
+                    category={getCategoryInfo(selectedPost.category).label}
                     categoryColor={
                       selectedPost.category === 'mobility' ? '#007AFF' :
                       selectedPost.category === 'environment' ? '#35C759' :

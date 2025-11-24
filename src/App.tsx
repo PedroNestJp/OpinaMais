@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { OpinaWelcome } from "./components/opina/OpinaWelcome";
 import { OpinaHome } from "./components/opina/OpinaHome";
 import { OpinaLogin } from "./components/opina/OpinaLogin";
@@ -8,6 +8,14 @@ import { OpinaFeed } from "./components/opina/OpinaFeed";
 import { OpinaEducation } from "./components/opina/OpinaEducation";
 import { OpinaProfile } from "./components/opina/OpinaProfile";
 import { AIChatButton } from "./components/opina/AIChatButton";
+import {
+  api,
+  ApiUser,
+  getStoredToken,
+  getStoredUser,
+  setStoredToken,
+  setStoredUser,
+} from "./lib/api";
 import {
   SubscriberDashboard,
   DashboardLogin,
@@ -34,7 +42,9 @@ type TabType = "home" | "education" | "profile";
 export default function App() {
   const [currentScreen, setCurrentScreen] =
     useState<ScreenType>("welcome");
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() =>
+    Boolean(getStoredToken()),
+  );
   const [isAnonymous, setIsAnonymous] = useState(false);
   const [isPremiumAuthenticated, setIsPremiumAuthenticated] =
     useState(false);
@@ -44,16 +54,74 @@ export default function App() {
   );
   const [audioMode, setAudioMode] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>("home");
+  const [authToken, setAuthToken] = useState<string | null>(() =>
+    getStoredToken(),
+  );
+  const [currentUser, setCurrentUser] = useState<ApiUser | null>(() =>
+    getStoredUser(),
+  );
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
 
-  const handleLogin = () => {
+  useEffect(() => {
+    setStoredToken(authToken);
+  }, [authToken]);
+
+  useEffect(() => {
+    setStoredUser(currentUser);
+  }, [currentUser]);
+
+  const persistAuth = (token: string, user: ApiUser) => {
+    setAuthToken(token);
+    setCurrentUser(user);
     setIsAuthenticated(true);
+    setIsAnonymous(false);
     setShowOnboarding(false);
-    setCurrentScreen("app");
   };
 
-  const handleSignup = () => {
-    setIsAuthenticated(true);
-    setCurrentScreen("onboarding");
+  const handleLogin = async (credentials: {
+    email: string;
+    password: string;
+  }) => {
+    setAuthError(null);
+    setAuthLoading(true);
+    try {
+      const response = await api.login(credentials);
+      persistAuth(response.token, response.user);
+      setCurrentScreen("app");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Erro ao entrar.";
+      setAuthError(message);
+      throw error;
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleSignup = async (payload: {
+    name: string;
+    email: string;
+    password: string;
+  }) => {
+    setAuthError(null);
+    setAuthLoading(true);
+    try {
+      await api.register(payload);
+      const loginResponse = await api.login({
+        email: payload.email,
+        password: payload.password,
+      });
+      persistAuth(loginResponse.token, loginResponse.user);
+      setCurrentScreen("onboarding");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Erro ao criar conta.";
+      setAuthError(message);
+      throw error;
+    } finally {
+      setAuthLoading(false);
+    }
   };
 
   const handleSkipAuth = () => {
@@ -78,15 +146,26 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    if (confirm("Tem certeza que deseja sair?")) {
-      setIsAuthenticated(false);
-      setIsAnonymous(false);
-      setShowOnboarding(true);
-      setUserInterests([]);
-      setAudioMode(false);
-      setCurrentScreen("welcome");
-      setActiveTab("home");
-    }
+    if (!confirm("Tem certeza que deseja sair?")) return;
+
+    setAuthLoading(true);
+    api
+      .logout()
+      .catch((error) =>
+        console.error("Erro ao deslogar no backend:", error),
+      )
+      .finally(() => {
+        setAuthToken(null);
+        setCurrentUser(null);
+        setIsAuthenticated(false);
+        setIsAnonymous(false);
+        setShowOnboarding(true);
+        setUserInterests([]);
+        setAudioMode(false);
+        setCurrentScreen("welcome");
+        setActiveTab("home");
+        setAuthLoading(false);
+      });
   };
 
   // Welcome Screen
@@ -122,6 +201,8 @@ export default function App() {
         onSkip={handleSkipAuth}
         onBack={() => setCurrentScreen("welcome")}
         onAnonymousLogin={handleAnonymousLogin}
+        isLoading={authLoading}
+        errorMessage={authError}
       />
     );
   }
@@ -133,6 +214,8 @@ export default function App() {
         onSignup={handleSignup}
         onNavigateToLogin={() => setCurrentScreen("login")}
         onBack={() => setCurrentScreen("how-it-works")}
+        isLoading={authLoading}
+        errorMessage={authError}
       />
     );
   }
@@ -214,6 +297,7 @@ export default function App() {
             userInterests={userInterests}
             audioMode={audioMode}
             isAnonymous={isAnonymous}
+            authToken={authToken}
           />
         )}
         {activeTab === "education" && (
@@ -226,12 +310,13 @@ export default function App() {
             onUpdateInterests={setUserInterests}
             onUpdateAudioMode={setAudioMode}
             onLogout={handleLogout}
+            user={currentUser}
           />
         )}
       </div>
 
       {/* AI Chat Button */}
-      <AIChatButton />
+      <AIChatButton authToken={authToken} />
 
       {/* Bottom Navigation */}
       <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-border z-50">

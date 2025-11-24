@@ -4,6 +4,7 @@ import { Card } from '../ui/card';
 import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import { Bot, Send, X, Minimize2, Maximize2, ExternalLink, Sparkles } from '../icons';
+import { api } from '../../lib/api';
 
 interface Message {
   id: number;
@@ -11,6 +12,10 @@ interface Message {
   content: string;
   sources?: { title: string; url: string; date: string }[];
   timestamp: Date;
+}
+
+interface AIChatButtonProps {
+  authToken?: string | null;
 }
 
 const mockResponses: Record<string, { content: string; sources: { title: string; url: string; date: string }[] }> = {
@@ -44,11 +49,14 @@ const suggestedQuestions = [
   '🗳️ Como posso participar das consultas públicas?',
 ];
 
-export function AIChatButton() {
+export function AIChatButton({ authToken }: AIChatButtonProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [chatUuid, setChatUuid] = useState<string | null>(null);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([
     {
       id: 1,
@@ -70,8 +78,33 @@ export function AIChatButton() {
     }
   }, [messages, isOpen, isMinimized]);
 
+  const ensureChat = async () => {
+    if (chatUuid) return chatUuid;
+    setChatLoading(true);
+    setChatError(null);
+    try {
+      const chat = await api.startChat();
+      setChatUuid(chat.uuid);
+      return chat.uuid;
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Não foi possível iniciar o chat. Faça login e tente novamente.';
+      setChatError(message);
+      throw err;
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
   const handleSend = () => {
     if (!input.trim()) return;
+    if (!authToken) {
+      setChatError('Faça login para conversar com o OpinAI.');
+      setIsOpen(true);
+      return;
+    }
 
     const userMessage: Message = {
       id: messages.length + 1,
@@ -84,26 +117,32 @@ export function AIChatButton() {
     setInput('');
     setIsTyping(true);
 
-    setTimeout(() => {
-      let response = mockResponses.default;
+    (async () => {
+      try {
+        const uuid = await ensureChat();
+        const response = await api.sendChatMessage({
+          chat_uuid: uuid,
+          message: userMessage.content,
+        });
 
-      if (input.toLowerCase().includes('projeto') || input.toLowerCase().includes('votação')) {
-        response = mockResponses.projetos;
-      } else if (input.toLowerCase().includes('orçamento') || input.toLowerCase().includes('saúde')) {
-        response = mockResponses.orçamento;
+        const assistantMessage: Message = {
+          id: Date.now(),
+          role: 'assistant',
+          content: response.content || 'Sem resposta no momento.',
+          timestamp: new Date(),
+        };
+
+        setMessages((prev) => [...prev, assistantMessage]);
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : 'Falha ao enviar mensagem. Tente novamente.';
+        setChatError(message);
+      } finally {
+        setIsTyping(false);
       }
-
-      const assistantMessage: Message = {
-        id: messages.length + 2,
-        role: 'assistant',
-        content: response.content,
-        sources: response.sources,
-        timestamp: new Date(),
-      };
-
-      setMessages((prev) => [...prev, assistantMessage]);
-      setIsTyping(false);
-    }, 1500);
+    })();
   };
 
   const handleSuggestedQuestion = (question: string) => {
@@ -266,6 +305,15 @@ export function AIChatButton() {
               <div ref={messagesEndRef} />
             </div>
 
+            {/* Alertas */}
+            {chatError && (
+              <div className="px-3 pb-2">
+                <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md p-2">
+                  {chatError}
+                </div>
+              </div>
+            )}
+
             {/* Input */}
             <div className="p-3 bg-white border-t">
               <div className="flex gap-2">
@@ -273,13 +321,19 @@ export function AIChatButton() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyPress={(e) => e.key === 'Enter' && handleSend()}
-                  placeholder="Faça uma pergunta..."
+                  placeholder={
+                    !authToken
+                      ? 'Faça login para usar o OpinAI'
+                      : isTyping
+                      ? 'OpinAI está respondendo...'
+                      : 'Faça uma pergunta...'
+                  }
                   className="flex-1 h-10 text-sm"
-                  disabled={isTyping}
+                  disabled={isTyping || chatLoading || !authToken}
                 />
                 <Button
                   onClick={handleSend}
-                  disabled={!input.trim() || isTyping}
+                  disabled={!input.trim() || isTyping || chatLoading || !authToken}
                   size="icon"
                   className="h-10 w-10 bg-primary hover:bg-primary/90"
                 >

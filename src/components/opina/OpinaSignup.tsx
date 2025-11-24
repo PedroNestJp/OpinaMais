@@ -7,12 +7,24 @@ import { Mail, Lock, Eye, EyeOff, User, ArrowLeft } from '../icons';
 import logoImage from 'figma:asset/39a9e75927b809ece9dd0193bc4b5f71704027b2.png';
 
 interface OpinaSignupProps {
-  onSignup: () => void;
+  onSignup: (payload: {
+    name: string;
+    email: string;
+    password: string;
+  }) => Promise<void>;
   onNavigateToLogin: () => void;
   onBack?: () => void;
+  isLoading?: boolean;
+  errorMessage?: string | null;
 }
 
-export function OpinaSignup({ onSignup, onNavigateToLogin, onBack }: OpinaSignupProps) {
+export function OpinaSignup({
+  onSignup,
+  onNavigateToLogin,
+  onBack,
+  isLoading,
+  errorMessage,
+}: OpinaSignupProps) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -20,9 +32,11 @@ export function OpinaSignup({ onSignup, onNavigateToLogin, onBack }: OpinaSignup
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setLocalError(null);
     
     // Validações básicas
     if (!termsAccepted) {
@@ -40,9 +54,14 @@ export function OpinaSignup({ onSignup, onNavigateToLogin, onBack }: OpinaSignup
       return;
     }
 
-    // Mock signup - em produção, criar conta no backend
     if (name && email && password) {
-      onSignup();
+      try {
+        await onSignup({ name, email, password });
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Erro ao criar conta.';
+        setLocalError(message);
+      }
     }
   };
 
@@ -72,6 +91,12 @@ export function OpinaSignup({ onSignup, onNavigateToLogin, onBack }: OpinaSignup
             </p>
           </div>
         </div>
+
+        {(localError || errorMessage) && (
+          <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
+            {localError || errorMessage}
+          </div>
+        )}
 
         {/* Formulário */}
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -200,9 +225,10 @@ export function OpinaSignup({ onSignup, onNavigateToLogin, onBack }: OpinaSignup
           {/* Botão Criar Conta */}
           <Button
             type="submit"
+            disabled={isLoading}
             className="w-full h-12 bg-[#008344] hover:bg-[#006633] text-white shadow-sm"
           >
-            Criar conta
+            {isLoading ? 'Criando conta...' : 'Criar conta'}
           </Button>
         </form>
 

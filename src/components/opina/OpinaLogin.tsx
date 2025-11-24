@@ -6,23 +6,41 @@ import { Mail, Lock, Eye, EyeOff, ArrowLeft } from '../icons';
 import opinaPlusLogo from 'figma:asset/b2d65caa40516ef90910feb7f464ae3b4989ab35.png';
 
 interface OpinaLoginProps {
-  onLogin: () => void;
+  onLogin: (payload: { email: string; password: string }) => Promise<void>;
   onNavigateToSignup: () => void;
   onSkip: () => void;
   onBack?: () => void;
   onAnonymousLogin?: () => void;
+  isLoading?: boolean;
+  errorMessage?: string | null;
 }
 
-export function OpinaLogin({ onLogin, onNavigateToSignup, onSkip, onBack, onAnonymousLogin }: OpinaLoginProps) {
+export function OpinaLogin({
+  onLogin,
+  onNavigateToSignup,
+  onSkip,
+  onBack,
+  onAnonymousLogin,
+  isLoading,
+  errorMessage,
+}: OpinaLoginProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    // Mock login - em produção, validar com backend
-    if (email && password) {
-      onLogin();
+    setLocalError(null);
+
+    if (!email || !password) return;
+
+    try {
+      await onLogin({ email, password });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Erro ao fazer login.';
+      setLocalError(message);
     }
   };
 
@@ -85,6 +103,12 @@ export function OpinaLogin({ onLogin, onNavigateToSignup, onSkip, onBack, onAnon
             Insira seu e-mail e senha. Faça sua voz valer.
           </p>
         </div>
+
+        {(localError || errorMessage) && (
+          <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
+            {localError || errorMessage}
+          </div>
+        )}
 
         {/* Formulário */}
         <form onSubmit={handleSubmit} className="space-y-2.5">
@@ -151,9 +175,10 @@ export function OpinaLogin({ onLogin, onNavigateToSignup, onSkip, onBack, onAnon
           {/* Botão Entrar */}
           <Button
             type="submit"
+            disabled={isLoading}
             className="w-full h-10 bg-[#008344] hover:bg-[#006633] text-white shadow-sm text-sm"
           >
-            Entrar
+            {isLoading ? 'Entrando...' : 'Entrar'}
           </Button>
         </form>
 

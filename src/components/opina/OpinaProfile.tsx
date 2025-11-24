@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -6,6 +6,7 @@ import { Label } from '../ui/label';
 import { Badge } from '../ui/badge';
 import { Avatar, AvatarFallback } from '../ui/avatar';
 import { User, Edit2, CheckCircle2, LogOut, Trash2, BookOpen, Volume2 } from '../icons';
+import { ApiUser } from '../../lib/api';
 import opinaPlusLogo from 'figma:asset/39a9e75927b809ece9dd0193bc4b5f71704027b2.png';
 import {
   Dialog,
@@ -22,6 +23,7 @@ interface OpinaProfileProps {
   onUpdateInterests: (interests: string[]) => void;
   onUpdateAudioMode: (mode: boolean) => void;
   onLogout?: () => void;
+  user?: ApiUser | null;
 }
 
 const allInterests = [
@@ -46,14 +48,22 @@ export function OpinaProfile({
   onUpdateInterests,
   onUpdateAudioMode,
   onLogout,
+  user,
 }: OpinaProfileProps) {
   const [isEditingName, setIsEditingName] = useState(false);
-  const [userName, setUserName] = useState('Cidadão Participante');
-  const [tempName, setTempName] = useState(userName);
+  const [userName, setUserName] = useState(user?.name || 'Cidadão Participante');
+  const [tempName, setTempName] = useState(user?.name || 'Cidadão Participante');
   const [isEditingInterests, setIsEditingInterests] = useState(false);
   const [selectedInterests, setSelectedInterests] = useState<string[]>(userInterests);
   const [localAudioMode, setLocalAudioMode] = useState(audioMode);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+
+  useEffect(() => {
+    if (user?.name) {
+      setUserName(user.name);
+      setTempName(user.name);
+    }
+  }, [user]);
 
   const toggleInterest = (id: string) => {
     setSelectedInterests((prev) =>
@@ -132,17 +142,20 @@ export function OpinaProfile({
             ) : (
               <>
                 <div className="flex items-center gap-3">
-                  <h2 className="text-foreground">{userName}</h2>
-                  <Button variant="ghost" size="sm" onClick={() => setIsEditingName(true)}>
-                    <Edit2 className="w-4 h-4" />
-                  </Button>
-                </div>
-                <p className="text-muted-foreground mb-3">Membro desde novembro de 2024</p>
-                <Badge className="bg-primary/10 text-primary border-primary/20">
-                  ✓ Perfil verificado
-                </Badge>
-              </>
+              <h2 className="text-foreground">{userName}</h2>
+              <Button variant="ghost" size="sm" onClick={() => setIsEditingName(true)}>
+                <Edit2 className="w-4 h-4" />
+              </Button>
+            </div>
+            {user?.email && (
+              <p className="text-sm text-muted-foreground">{user.email}</p>
             )}
+            <p className="text-muted-foreground mb-3">Membro desde novembro de 2024</p>
+            <Badge className="bg-primary/10 text-primary border-primary/20">
+              ✓ Perfil verificado
+            </Badge>
+          </>
+        )}
           </div>
         </div>
       </Card>
